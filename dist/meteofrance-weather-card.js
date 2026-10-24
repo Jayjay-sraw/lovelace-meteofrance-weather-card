@@ -89,6 +89,7 @@ const translations = {
       "Vagues-submersion": "Vagues-submersion",
     },
     "rainIntensity": {
+      "Temps sec": "Temps sec",
       "Pluie faible": "Pluie faible",
       "Pluie modérée": "Pluie modérée",
       "Pluie forte": "Pluie forte",
@@ -150,6 +151,7 @@ const translations = {
       "Vagues-submersion": "Waves/flooding",
     },
     "rainIntensity": {
+      "Temps sec": "Dry",
       "Pluie faible": "Light rain",
       "Pluie modérée": "Moderate rain",
       "Pluie forte": "Heavy rain",
@@ -822,7 +824,7 @@ _unsubscribeDailyForecastEvents() {
             (forecast) => html` <li
               class="rain-${forecast[0]}min"
               style="opacity: ${forecast[1]}"
-              title="${forecast[2]}"
+              title="${this.getTranslations().rainIntensity[forecast[2]] || forecast[2]}"
             ></li>`
           )}
         `}
