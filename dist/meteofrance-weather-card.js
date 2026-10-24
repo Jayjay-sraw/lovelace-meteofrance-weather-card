@@ -1471,12 +1471,6 @@ _unsubscribeDailyForecastEvents() {
         text-transform: uppercase;
       }
 
-      .forecast ul.day > li {
-        line-height: 1;
-        padding: 0;
-        margin: 0;
-      }
-
       .slotTime {
         display: block;
         font-size: 0.75em;
@@ -1490,6 +1484,11 @@ _unsubscribeDailyForecastEvents() {
 
       .forecast ul.day .lowTemp {
         color: var(--secondary-text-color);
+      }
+
+      .forecast ul.day > li {
+        margin: 0;
+        padding: 0;
       }
 
       .forecast ul.day .icon {
