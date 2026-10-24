@@ -40,6 +40,51 @@ const weatherIconsNight = {
   "partlycloudy": "cloudy-night-3",
 };
 
+// Pictogrammes nuancés du jour (option daily_condition_from_hourly) : la condition
+// vaut "nuance:<icône>", l'icône est le fichier du même nom dans icons/.
+const nuanceTexts = {
+  "fr": {
+    "day": "Ensoleillé",
+    "cloudy-day-1": "Peu nuageux",
+    "cloudy-day-2": "Éclaircies",
+    "cloudy-day-3": "Nuageux avec éclaircies",
+    "cloudy": "Couvert",
+    "rainy-1": "Averses et soleil",
+    "rainy-2": "Averses et éclaircies",
+    "rainy-3": "Nuageux, averses et éclaircies",
+    "rainy-4": "Pluie faible",
+    "rainy-5": "Pluie modérée",
+    "rainy-6": "Pluie forte",
+    "thunder": "Orages",
+    "snowy-1": "Averses de neige et soleil",
+    "snowy-2": "Averses de neige et éclaircies",
+    "snowy-3": "Nuageux, neige et éclaircies",
+    "snowy-4": "Neige faible",
+    "snowy-5": "Neige modérée",
+    "snowy-6": "Neige forte",
+  },
+  "en": {
+    "day": "Sunny",
+    "cloudy-day-1": "Mostly sunny",
+    "cloudy-day-2": "Partly cloudy",
+    "cloudy-day-3": "Mostly cloudy",
+    "cloudy": "Overcast",
+    "rainy-1": "Showers and sun",
+    "rainy-2": "Showers and sunny spells",
+    "rainy-3": "Cloudy, showers and sunny spells",
+    "rainy-4": "Light rain",
+    "rainy-5": "Moderate rain",
+    "rainy-6": "Heavy rain",
+    "thunder": "Thunderstorms",
+    "snowy-1": "Snow showers and sun",
+    "snowy-2": "Snow showers and sunny spells",
+    "snowy-3": "Cloudy, snow and sunny spells",
+    "snowy-4": "Light snow",
+    "snowy-5": "Moderate snow",
+    "snowy-6": "Heavy snow",
+  },
+};
+
 const translations = {
   "fr": {
     "conditions": {
@@ -290,7 +335,7 @@ class MeteofranceWeatherCard extends LitElement {
       "hourly_wind", "hourly_wind_gust", "hourly_precipitation",
       "hourly_humidity", "hourly_wind_icons",
       "daily_wind", "daily_wind_gust", "daily_precipitation",
-      "daily_humidity", "daily_wind_icons",
+      "daily_humidity", "daily_wind_icons", "daily_condition_from_hourly",
     ];
     boolKeys.forEach((k) => {
       if (k in upgradedConfig && typeof upgradedConfig[k] === "string") {
@@ -416,7 +461,7 @@ _unsubscribeDailyForecastEvents() {
       !this.hass ||
       !this._config ||
       this._config.forecast_type === "sliding" ||
-      !this.isSelected(this._config.hourly_forecast)
+      (!this.isSelected(this._config.hourly_forecast) && !this._nuancedDaily())
     ) {
       return;
     }
@@ -461,6 +506,72 @@ _unsubscribeDailyForecastEvents() {
         "entity_id": this._config.entity,
       }
     );
+  }
+
+  _nuancedDaily() {
+    return this._config.daily_condition_from_hourly === true && this.isSelected(this._config.daily_forecast);
+  }
+
+  // Pictogramme du jour recalculé sur les heures de jour (day_start_hour → day_end_hour)
+  // à partir des prévisions horaires : le pictogramme journalier de Météo-France marque
+  // « pluie » dès qu'il pleut à un moment de la journée, même la nuit. Au-delà de
+  // l'horizon horaire (moins de 6 h couvertes), le pictogramme d'origine est conservé.
+  _nuanceDailyForecast(dailyEvent, hourlyEvent) {
+    if (!this._nuancedDaily() || !dailyEvent?.forecast || !hourlyEvent?.forecast?.length) {
+      return dailyEvent;
+    }
+    const start = Number(this._config.day_start_hour ?? 7);
+    const end = Number(this._config.day_end_hour ?? 20);
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: this.hass.config.time_zone, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit",
+    });
+    const local = (iso) => {
+      const p = Object.fromEntries(fmt.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+      return { day: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
+    };
+    const kind = {
+      "sunny": "sun", "clear": "sun", "clear-night": "sun",
+      "partlycloudy": "part", "cloudy": "cloud", "fog": "cloud", "windy": "cloud", "windy-variant": "cloud",
+      "rainy": "rain", "pouring": "rain", "hail": "rain",
+      "lightning": "thunder", "lightning-rainy": "thunder",
+      "snowy": "snow", "snowy-rainy": "snow",
+    };
+    // Chaque prévision horaire couvre jusqu'à la suivante (1 h, puis 3 h au-delà de J+1).
+    const parDay = {};
+    const hourly = hourlyEvent.forecast;
+    hourly.forEach((f, i) => {
+      const t0 = new Date(f.datetime).getTime();
+      const t1 = i + 1 < hourly.length ? new Date(hourly[i + 1].datetime).getTime() : t0 + 3600e3;
+      const steps = Math.max(1, Math.round((t1 - t0) / 3600e3));
+      for (let s = 0; s < steps; s++) {
+        const { day, hour } = local(t0 + s * 3600e3);
+        if (hour < start || hour >= end) continue;
+        const d = (parDay[day] ||= { hours: 0, sun: 0, part: 0, cloud: 0, rain: 0, snow: 0, thunder: 0, mm: 0, mmKnown: true });
+        d.hours++;
+        // Une trace de pluie (< 0,2 mm) ne fait pas une heure pluvieuse.
+        const k = kind[f.condition] || "cloud";
+        d[k === "rain" && f.precipitation != null && f.precipitation < 0.2 ? "cloud" : k]++;
+        if (f.precipitation == null) d.mmKnown = false;
+        else d.mm += f.precipitation / steps;
+      }
+    });
+    const forecast = dailyEvent.forecast.map((daily) => {
+      const d = parDay[local(daily.datetime).day];
+      if (!d || d.hours < 6) return daily;
+      const sunScore = (d.sun + 0.5 * d.part) / d.hours;
+      const anySun = d.sun + d.part > 0;
+      const mm = d.mmKnown ? d.mm : (daily.precipitation ?? 0);
+      const wet = (base) => sunScore >= 0.5 ? `${base}-1` : sunScore >= 0.25 ? `${base}-2` : anySun ? `${base}-3`
+        : mm < 2 ? `${base}-4` : mm < 8 ? `${base}-5` : `${base}-6`;
+      const icon = d.thunder > 0 ? "thunder"
+        : d.snow > 0 ? wet("snowy")
+        : d.rain > 0 ? wet("rainy")
+        : sunScore >= 0.9 ? "day" : sunScore >= 0.6 ? "cloudy-day-1" : sunScore >= 0.4 ? "cloudy-day-2"
+        : anySun ? "cloudy-day-3" : "cloudy";
+      return { ...daily, condition: `nuance:${icon}` };
+    });
+    return { ...dailyEvent, forecast };
   }
 
   _computeSlidingForecast(forecastEvent) {
@@ -642,7 +753,7 @@ _unsubscribeDailyForecastEvents() {
           ? this.renderForecast(this._hourlyForecastEvent, this._config.number_of_hourly_forecasts)
           : ""}
         ${this._config.forecast_type !== "sliding" && this.isSelected(this._config.daily_forecast)
-          ? this.renderForecast(this._dailyForecastEvent, this._config.number_of_daily_forecasts)
+          ? this.renderForecast(this._nuanceDailyForecast(this._dailyForecastEvent, this._hourlyForecastEvent), this._config.number_of_daily_forecasts)
           : ""}
         ${this._config.forecast_type === "sliding"
           ? this.renderForecast(this._computeSlidingForecast(this._slidingForecastEvent))
@@ -1090,16 +1201,21 @@ _unsubscribeDailyForecastEvents() {
   }
 
   getWeatherIcon(condition, isNight) {
+    const nuance = condition.startsWith("nuance:") ? condition.slice(7) : null;
     return `${
       this._config.icons
         ? this._config.icons
         : "/local/community/lovelace-meteofrance-weather-card/icons/"
-    }${isNight ? weatherIconsNight[condition] : weatherIconsDay[condition]}${
+    }${nuance || (isNight ? weatherIconsNight[condition] : weatherIconsDay[condition])}${
       this.isSelected(this._config.animated_icons) ? "" : "-static"
     }.svg`;
   }
 
   getPhenomenaText(phenomena, isNight) {
+    if (phenomena.startsWith("nuance:")) {
+      const lang = (this.hass.language || "en").split("-")[0];
+      return (nuanceTexts[lang] || nuanceTexts["en"])[phenomena.slice(7)];
+    }
     const t = this.getTranslations();
     const text = isNight
       ? (t.conditionsNightOverride[phenomena] || t.conditions[phenomena])
